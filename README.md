@@ -1,6 +1,6 @@
 # Tiny Programmable Digital Peripheral (Tiny PDP)
 
-This repo contains a Programmable Digital Peripheral (PDP). PDP allows us to write very simple assembly programs to emulate a number of different peripherals and communication protocols. Tiny PDP is designed after the Microchip PIC16C5x Instruction Set with extension to make it easier to emulate peripherals and communication protocols. Tiny PDP is really tiny and it is implemented using less than 3000 gates (for 32 bytes data RAM).
+This repo contains a Programmable Digital Peripheral (PDP). PDP allows us to write very simple assembly programs to emulate different peripherals and communication protocols. Tiny PDP is designed after the Microchip PIC16C5x Instruction Set with extension to make it easier to emulate peripherals. Tiny PDP can be implemented in less than 3000 ASIC gates which makes it very attractive.
 
 ## Tiny PDP Architecture
 
