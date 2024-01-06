@@ -47,12 +47,12 @@
         D: FIFO Register 1
 */
 
-module ms_pic165x (
+module Tiny_PDP (
     input   wire            clk,
     input   wire            rst_n,
     input   wire    [11:0]  instr,
     output  reg     [9:0]   pc,
-    output  wire    [7:0]   py_out,
+    output  wire    [7:0]   px_out,
     output  wire    [7:0]   px_dir,
     input   wire    [7:0]   px_in,
     output  wire    [7:0]   py_out,
@@ -329,9 +329,9 @@ module ms_pic165x (
             portc_nedge <= 0;
             portc_prev <= 0;
         end else begin
-            portc_prev <= TRISC & pc_in;
-            portc_pedge <= ~portc_prev & (pc_in & TRISC);
-            portc_nedge <= portc_prev & ~(pc_in & TRISC);
+            portc_prev <= TRISC & py_in;
+            portc_pedge <= ~portc_prev & (py_in & TRISC);
+            portc_nedge <= portc_prev & ~(py_in & TRISC);
         end
 
     // The Registers File
@@ -563,7 +563,7 @@ module ms_pic165x (
     assign px_dir       = TRISB;
     assign px_dir       = TRISC;
 
-    assign py_out       = PORTB;
+    assign px_out       = PORTB;
     assign py_out       = PORTC;
 
     assign fifo_wdata   = {FIFO[1], FIFO[0]};
