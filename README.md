@@ -44,10 +44,10 @@ Tiny PDP has internal data RAM of up to 64 bytes that can be used for variables.
 
 Tiny PDP interfaces with the system through:
 
-- 16x16 Receive and Transmit FIFOs
-- 8-bit Status and Control Registers
-- Firmware ROM
-- IRQ line
+- Receive and Transmit FIFOs.
+- 8-bit System Status and Control Registers.
+- Firmware ROM (Up to 512 12-bit instruction words).
+- IRQ line.
 
 ## Timers
 
