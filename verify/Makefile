@@ -1,7 +1,9 @@
 # Makefile
+# Usage: make APP_NAME=test_name
 
 # Compiler
 ASM = gpasm
+HEXCONV = ihex2vhex.py
 
 # Source file extension
 SRC_EXT = asm
@@ -16,10 +18,10 @@ endif
 
 all: $(TARGET)
 
-$(TARGET): $(SOURCE)
+$(TARGET): $(SOURCE) ../rtl/Tiny_PDP.v Tiny_PDP_tb.v
 	$(ASM) $(SOURCE)
 	python3 ihex2vhex.py $(APP_NAME).hex > $(APP_NAME).v.hex
-	iverilog -o $(APP_NAME).vvp -DTEST="$(APP_NAME).v.hex" ms_pic165x.v ms_pic165x_tb.v
+	iverilog -o $(APP_NAME).vvp -DTEST="$(APP_NAME).v.hex" ../rtl/Tiny_PDP.v Tiny_PDP_tb.v
 	./$(APP_NAME).vvp
 
 clean:
