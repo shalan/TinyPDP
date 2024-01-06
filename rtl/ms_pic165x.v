@@ -52,12 +52,12 @@ module ms_pic165x (
     input   wire            rst_n,
     input   wire    [11:0]  instr,
     output  reg     [9:0]   pc,
-    output  wire    [7:0]   pb_out,
-    output  wire    [7:0]   pb_dir,
-    input   wire    [7:0]   pb_in,
-    output  wire    [7:0]   pc_out,
-    output  wire    [7:0]   pc_dir,
-    input   wire    [7:0]   pc_in,
+    output  wire    [7:0]   py_out,
+    output  wire    [7:0]   px_dir,
+    input   wire    [7:0]   px_in,
+    output  wire    [7:0]   py_out,
+    output  wire    [7:0]   py_dir,
+    input   wire    [7:0]   py_in,
     output  wire    [31:0]  fifo_wdata,
     input   wire    [31:0]  fifo_rdata,
     output  wire            fifo_rd,
@@ -354,8 +354,8 @@ module ms_pic165x (
                 3 : RAM_out = {TO, 4'd0, Z, 1'b0, C};
                 4 : RAM_out = FSR;
                 5 : RAM_out = PORTC_EDGE;
-                6 : RAM_out = (PORTB&(~TRISB)) | (pb_in&TRISB);
-                7 : RAM_out = (PORTC&(~TRISC)) | (pc_in&TRISC);
+                6 : RAM_out = (PORTB&(~TRISB)) | (px_in&TRISB);
+                7 : RAM_out = (PORTC&(~TRISC)) | (py_in&TRISC);
                 8 : RAM_out = SHIFT;
                 9 : RAM_out = INDEX;
                 10: RAM_out = RAM[IND_addr];
@@ -560,11 +560,11 @@ module ms_pic165x (
             else 
                 if(wr_to_w) W <= ALU_out;
 
-    assign pb_dir       = TRISB;
-    assign pc_dir       = TRISC;
+    assign px_dir       = TRISB;
+    assign px_dir       = TRISC;
 
-    assign pb_out       = PORTB;
-    assign pc_out       = PORTC;
+    assign py_out       = PORTB;
+    assign py_out       = PORTC;
 
     assign fifo_wdata   = {FIFO[1], FIFO[0]};
 
