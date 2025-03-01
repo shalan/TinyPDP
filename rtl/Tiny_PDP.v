@@ -1,26 +1,31 @@
 /*
-    A PIC16C57 like peripherals controller with the following features
-    - ROM: 512 words
+    A peripherals controller with the following features
+    - ROM: Up to 512 words
     - RAM: 
         - First 16 bytes are left for SFRs
-        - Next 16 bytes are used for data; there are 4 16-byte banks 
+        - Next 16 bytes are used for data; there are up to 4 16-byte banks 
     - call stack depth is 4
-    - Two I/O ports PORTB and PORTC
-    - NO PCL register
-    - 8-bit TMR0
+    - Two I/O ports PORTX and PORTY
+    - Two 8-bit Timers with 8-bit prescalers
     - OPTION Register:
         - 0-2 : TMR0 Prescaler selection
         - 3   : TMR0 enable
+        - 4-6 : TMR1 Prescaler selection
+        - 7   : TMR1 enable
     - STATUS Register:
         - 0: C flag
         - 2: Z Flag
-        - 7: TO flag
+        - 6: TO0, TO flag for TMR0
+        - 7: TO1, TO flag for TMR1
     - SLEEP for LP operation
-        - Wake up on TMR0 TO or Portc Event 
+        - Wake up on TMR0/1 TO or Portc Events 
     - Ineterrupt Vector table
         - 0: reset
         - 1 TMR0 TO
-        - 2 PORTC Event
+        - 2 TMR1 TO
+        - 3 PORTC Event
+        - 4 RDFIFO is not empty [tbd]
+        - 5 WRFIFO is empty [tbd]
     - No indirect memory access
 
     Special Function Registers:
@@ -36,8 +41,13 @@
         9: Index Regsiter
         A: Indirect Register
         B: Control Register
-        0-1: INDEX Auto increment/decrement
-            1-2: SHIFT direction
+            0-1: INDEX Auto increment/decrement
+            2-3: SHIFT operation (TBD)
+                 00 : Clear
+                 11 : Write
+                 10 : SHR
+                 01 : SHL   
+            2: SHIFT direction
             3: SHIFT clear
             4: TMR Selection
             5: System IRQ
@@ -45,6 +55,29 @@
             7: System FIFO Write
         C: FIFO Register 0
         D: FIFO Register 1
+        E: FIFO Register 2
+        F: FIFO Register 3
+*/
+
+/*
+        UART TX:
+            RDFIFO_NE:
+                tx_data = RDFIFO
+                one_cnt = 0
+                bit_indx = 0
+                Drop TX pin low
+                generate TMR0 interrupt with a period = bit time
+            TMR0 ISR:
+                TX = tx_data & 1
+                if(TX) one_cnt++
+                bit_indx++
+                tx_data = tx_data >> 1
+                sleep
+
+        
+
+
+
 */
 
 module Tiny_PDP (
@@ -62,8 +95,11 @@ module Tiny_PDP (
     input   wire    [31:0]  fifo_rdata,
     output  wire            fifo_rd,
     output  wire            fifo_wr,
+    input   wire            rfifo_ne,
+    input   wire            wfifo_nf,
     output  wire            irq
 );
+/*
     localparam  [3:0]   INDF_ADDR   = 0,
                         TMR0_ADDR   = 1,
                         PCL_ADDR    = 2,
@@ -72,49 +108,8 @@ module Tiny_PDP (
                         PORTA_ADDR  = 5,
                         PORTB_ADDR  = 6,
                         PORTC_ADDR  = 7;
-
-    localparam  [11:0]  OP_NOP    = 12'b0000_0000_0000,   // No Operation
-                        OP_OPTION = 12'b0000_0000_0010,   // Set Option Register
-                        OP_SLEEP  = 12'b0000_0000_0011,   // Set Sleep Register
-                        OP_CLRWDT = 12'b0000_0000_0100,   // Clear Watchdog Timer
-                        OP_TRISA  = 12'b0000_0000_0101,   // Set Port A Tristate Control Reg
-                        OP_TRISB  = 12'b0000_0000_0110,   // Set Port B Tristate Control Reg
-                        OP_TRISC  = 12'b0000_0000_0111,   // Set Port C Tristate Control Reg
-                        OP_CLRW   = 12'b0000_0100_0000;   // W = 0; Z;
-
-    localparam  [11:0]  OP_MOVWF  =  12'b0000_001x_xxxx;         // F = W;
-    localparam  [11:0]  OP_CLRF   =  12'b0000_011x_xxxx;         // F = 0; Z;
-
-    localparam  [11:0]  OP_SUBWF  =  12'b0000_10xx_xxxx,  // D ? F = F - W : W = F - W; Z, C, DC;
-                        OP_DECF   =  12'b0000_11xx_xxxx,  // D ? F = F - 1 : W = F - 1; Z;
-
-                        OP_IORWF  =  6'b0001_00,  // D ? F = F | W : W = F | W; Z;
-                        OP_ANDWF  =  6'b0001_01,  // D ? F = F & W : W = F & W; Z;
-                        OP_XORWF  =  6'b0001_10,  // D ? F = F ^ W : W = F ^ W; Z;
-                        OP_ADDWF  =  6'b0001_11,  // D ? F = F + W : W = F + W; Z, C, DC;
-                        
-                        OP_MOVF   =  6'b0010_00,  // D ? F = F     : W = F    ; Z;
-                        OP_COMF   =  6'b0010_01,  // D ? F = ~F    : W = ~F   ; Z;
-                        OP_INCF   =  6'b0010_10,  // D ? F = F + 1 : W = F + 1; Z;
-                        OP_DECFSZ =  6'b0010_11,  // D ? F = F - 1 : W = F - 1; skip if Z;
-                        
-                        OP_RRF    =  6'b0011_00,  // D ? F = {C,F[7:1]} : W={C,F[7:1]};C=F[0]
-                        OP_RLF    =  6'b0011_01,  // D ? F = {F[6:0],C} : W={F[6:0],C};C=F[7]
-                        OP_SWAPF  =  6'b0011_10,  // D ? F = t : W = t; t = {F[3:0], F[7:4]}
-                        OP_INCFSZ =  6'b0011_11;  // D ? F = F - 1 : W = F - 1; skip if Z
-
-    localparam  [3:0]   OP_BCF    =  4'b0100,     // F = F & ~(1 << bit);
-                        OP_BSF    =  4'b0101,     // F = F |  (1 << bit);
-                        OP_BTFSC  =  4'b0110,     // skip if F[bit] == 0;
-                        OP_BTFSS  =  4'b0111,     // skip if F[bit] == 1;
-                        OP_RETLW  =  4'b1000,     // W = L; Pop(PC = TOS);
-                        OP_CALL   =  4'b1001,     // Push(TOS=PC+1); PC={PA[2:0],0,L[7:0]};
-                        OP_MOVLW  =  4'b1100,     // W = L[7:0];
-                        OP_IORLW  =  4'b1101,     // W = L[7:0] | W; Z;
-                        OP_ANDLW  =  4'b1110,     // W = L[7:0] & W; Z;
-                        OP_XORLW  =  4'b1111;     // W = L[7:0] ^ W; Z;
-
-    localparam  [2:0]   OP_GOTO   =  3'b101;      // PC = {PA[2:0], L[8:0]};
+*/
+    `include "pdp_opcodes.vh"
 
     wire [3:0]  instr_opcode3   =   instr[11:9];
     wire [3:0]  instr_opcode4   =   instr[11:8];
@@ -173,43 +168,45 @@ module Tiny_PDP (
                                 (instr_opcode6 == 6'b0000_10)   |
                                 (instr_opcode6 == 6'b0000_11)
                             );
-    // The SFRs
+    // The Registers
     reg [7:0]   W,
                 OPTION,
                 TRISA,
                 TRISB,
                 TRISC;
 
-    reg [7:0]   TMR0_LOAD   , TMR1_LOAD,  // RAM[0]
-                TMR0        , TMR1,  // RAM[1],
-                PORTC_IE    ,   // RAM[2],
-                STATUS      ,   // RAM[3],   
-                FSR         ,   // RAM[4],
-                PORTC_EDGE  ,   // RAM[5],
-                PORTB       ,   // RAM[6],
-                PORTC       ,   // RAM[7];
-                SHIFT       ,   // RAM[8]
-                INDEX       ,
-                CONTROL     ,
-                FIFO [1:0]  ;
+    // SFR
+    wire[7:0]   TMR0        , TMR1;         // RAM[1],
+    reg [7:0]   TMR0_LOAD   , TMR1_LOAD,    // RAM[0]
+                PORTC_IE    ,               // RAM[2],
+                STATUS      ,               // RAM[3],   
+                FSR         ,               // RAM[4],
+                PORTC_EDGE  ,               // RAM[5],
+                PORTB       ,               // RAM[6],
+                PORTC       ,               // RAM[7];
+                SHIFT       ,               // RAM[8]
+                INDEX       ,               // RAM[9]
+                CONTROL     ,               // RAM[11]
+                FIFO [3:0]  ;               // RAM[15:12]
 
     reg [7:0]   ALU_out;
     reg [7:0]   bit_mask;
     reg [7:0]   bit_out;
     reg         bit_test;
-    reg         CF, C;
-    reg         ZF, Z;
+    reg         C;
+    reg         Z;
 
-    wire        TOF = (TMR0 == 0);
-    reg         TO;
-    wire        TOF1 = (TMR1 == 0);
+    reg         TO0;
     reg         TO1;
 
+    //
+    // Sleep/Wakeup Logic
+    //
+    reg         SLEEP;
+    
+    wire        portc_pedge_event = |(portc_pedge & PORTC_EDGE & PORTC_IE);
+    wire        portc_nedge_event = |(portc_nedge & ~PORTC_EDGE & PORTC_IE);
 
-    // Sleep FF
-    reg     SLEEP;
-    wire    portc_pedge_event = |(portc_pedge & PORTC_EDGE & PORTC_IE);
-    wire    portc_nedge_event = |(portc_nedge & ~PORTC_EDGE & PORTC_IE);
     always @(posedge clk, negedge rst_n)
         if(!rst_n)
             SLEEP <= 0;
@@ -222,8 +219,9 @@ module Tiny_PDP (
         else if(portc_nedge_event)
             SLEEP <= 0;     
         
-
-    // The Stack
+    //
+    // The Call Stack
+    //
     reg [7:0]   call_stack [3:0];
     reg [2:0]   tos;
 
@@ -238,24 +236,58 @@ module Tiny_PDP (
                 tos <= tos - 1'b1;
             end
 
+    //
+    // The timers
+    //
+    wire tmr0_wr = wr_to_ram && SFR_access && (SFR_addr==1) && ~CONTROL[4];
+    wire tmr1_wr = wr_to_ram && SFR_access && (SFR_addr==1) && CONTROL[4];
+
+    pdp_timer timer_0 (
+        .clk(clk),
+        .rst_n(rst_n),
+        .en(OPTION[3]),         
+        .tmr_wr(wr_to_ram && SFR_access && (SFR_addr==1) && ~CONTROL[4]),     
+        .pr_sel(OPTION[2:0]),     
+        .data_in(TAM_in),    
+        .reload(TMR0_LOAD),     
+        .tmr(TMR0),    
+        .to(TO0)          
+    );
+
+    pdp_timer timer_1 (
+        .clk(clk),
+        .rst_n(rst_n),
+        .en(OPTION[7]),         
+        .tmr_wr(tmr1_wr),     
+        .pr_sel(OPTION[6:4]),     
+        .data_in(TAM_in),    
+        .reload(TMR1_LOAD),     
+        .tmr(TMR1),    
+        .to(TO1)          
+    );
+/*
     // TMR0
-    reg[7:0] pr;
-    wire tmr0_inc;
-    reg pr_prev;
+    reg[7:0]    pr;
+    wire        tmr0_inc;
+    reg         pr_prev;
+    reg         tof_prev;
+
+    // The prescaler
     always @(posedge clk, negedge rst_n)
         if(!rst_n)
             pr <= 0;
         else if(OPTION[3])
             pr <= pr + 1;
 
+    // Generate the inc pulse
     always @(posedge clk, negedge rst_n)
         if(!rst_n)
             pr_prev <= 0;
         else
             pr_prev <= pr[OPTION[2:0]];
-
     assign tmr0_inc = ~pr_prev & pr[OPTION[2:0]];
 
+    // The timer
     always @(posedge clk, negedge rst_n)
         if(!rst_n)
             TMR0 <= 8'b0;
@@ -267,11 +299,9 @@ module Tiny_PDP (
             else
                 TMR0 <= TMR0 + 1'b1;
 
-    reg tof_prev;
-
+    // Generate the TO pulse
     always@(posedge clk)
         tof_prev <= TOF;
-
     always @(posedge clk, negedge rst_n)
         if(!rst_n)
             TO <= 0;
@@ -333,17 +363,17 @@ module Tiny_PDP (
             portc_pedge <= ~portc_prev & (py_in & TRISC);
             portc_nedge <= portc_prev & ~(py_in & TRISC);
         end
-
+*/
+    //
     // The Registers File
-    reg [7:0]   RAM [32:0];     // 2 x 16-bytes banks
+    //
+    reg [7:0]   RAM [32:0];    
     reg [7:0]   RAM_out;
-
-    wire        RAM_access = instr_f[4];
-    wire        SFR_access = ~RAM_access;
-    wire [5:0]  RAM_addr = {FSR[6], FSR[5], instr_f[3:0]};
-    wire [3:0]  SFR_addr = instr_f[3:0];
-
-    wire [5:0]  IND_addr =  {FSR[6], FSR[5], INDEX[3:0]}; 
+    wire        RAM_access  =   instr_f[4];
+    wire        SFR_access  =   ~RAM_access;
+    wire [5:0]  RAM_addr    =   {FSR[6], FSR[5], instr_f[3:0]};
+    wire [3:0]  SFR_addr    =   instr_f[3:0];
+    wire [5:0]  IND_addr    =   {FSR[6], FSR[5], INDEX[3:0]}; 
                             
     always @* begin
         if(SFR_access)
@@ -351,7 +381,7 @@ module Tiny_PDP (
                 0 : RAM_out = CONTROL[4] ? TMR1_LOAD : TMR0_LOAD;
                 1 : RAM_out = CONTROL[4] ? TMR1 : TMR0;
                 2 : RAM_out = PORTC_IE;
-                3 : RAM_out = {TO, 4'd0, Z, 1'b0, C};
+                3 : RAM_out = {TO1, TO0, 3'd0, Z, 1'b0, C};
                 4 : RAM_out = FSR;
                 5 : RAM_out = PORTC_EDGE;
                 6 : RAM_out = (PORTB&(~TRISB)) | (px_in&TRISB);
@@ -362,6 +392,8 @@ module Tiny_PDP (
                 11: RAM_out = CONTROL;
                 12: RAM_out = fifo_rdata[7:0];
                 13: RAM_out = fifo_rdata[15:8];
+                12: RAM_out = fifo_rdata[23:15];
+                13: RAM_out = fifo_rdata[31:24];
                 default: RAM_out = 'b0;
             endcase
         else begin
@@ -405,7 +437,9 @@ module Tiny_PDP (
                 end
             end
     
-    // IND Register
+    //
+    // IND (Indirect) Register
+    //
     always @(posedge clk, negedge rst_n)
         if(!rst_n) 
             INDEX <= 'b0;
@@ -422,15 +456,19 @@ module Tiny_PDP (
             else if(CONTROL[1])
                 INDEX <= INDEX - 1;
         end 
-            
+    
+    //
     // Control Register
+    //
     always @(posedge clk, negedge rst_n)
         if(!rst_n) 
             CONTROL <= 'b0;
         else if((wr_to_ram==1) && (SFR_access) && (SFR_addr == 11))
             CONTROL <= RAM_in;
-        
+    
+    //
     // STATUS Register
+    //
     always @(posedge clk, negedge rst_n)
         if(!rst_n) begin
            C    <= 'b0;
@@ -448,14 +486,19 @@ module Tiny_PDP (
                 Z <= ZF;
             end
     
+    //
+    // Program Counter
+    //
     always @(posedge clk, negedge rst_n)
         if(!rst_n)
             pc <= 'b0;
         else
-            if(SLEEP & TO) 
+            if(SLEEP & TO0)   
                 pc <= 1;
-            else if(SLEEP & |(portc_nedge_event | portc_pedge_event))
+            else if(SLEEP & TO1) 
                 pc <= 2;
+            else if(SLEEP & |(portc_nedge_event | portc_pedge_event))
+                pc <= 3;
             else if(!SLEEP)
                 if(instr_opcode3 == OP_GOTO)
                     pc <= instr_literal9;
@@ -472,12 +515,14 @@ module Tiny_PDP (
                 else
                     pc <= pc + 'd1;
 
-    // Special Registers
+    //
+    // I/O Registers
+    //
     always @(posedge clk, negedge rst_n)
         if(!rst_n) begin
-            W       <= 'b0;
+            //W       <= 'b0;
             OPTION  <= 'b0;
-            TRISA   <= 'b0;
+            //TRISA   <= 'b0;
             TRISB   <= 'b0;
             TRISC   <= 'b0;
         end
@@ -485,11 +530,46 @@ module Tiny_PDP (
             if (instr_opcode4 == 4'b0000)
                 case (instr)
                     OP_OPTION   :   OPTION  <= W;
-                    OP_TRISA    :   TRISA   <= W;
+                    //OP_TRISA    :   TRISA   <= W;
                     OP_TRISB    :   TRISB   <= W;
                     OP_TRISC    :   TRISC   <= W;
                 endcase
 
+    //
+    // ALU + BMU
+    //
+    pdp_alu ALU (
+        .W(W),
+        .F(RAM_out),
+        .L(instr_literal8),
+        .opcode(instr_opcode6),
+        .C(C),
+        .out(ALU_out),
+        .CF(CF),
+        .ZF(ZF)
+    );
+
+    pdp_bmu BMU (
+        .bit_sel(instr_bit),
+        .opcode(instr_opcode4),
+        .F(RAM_out),
+        .out(bit_out),
+        .test(bit_test)
+    );
+
+    //
+    // W Register
+    //
+    always @(posedge clk, negedge rst_n)
+        if(!rst_n) 
+            W <= 'b0;
+        else if(!SLEEP) 
+            if(instr_opcode4 == OP_RETLW)
+                W <= instr_literal8;
+            else 
+                if(wr_to_w) W <= ALU_out;
+
+/*
     always @* begin
         CF = 0;
         casex (instr_opcode6)
@@ -519,7 +599,9 @@ module Tiny_PDP (
 
     always @*
         ZF = (ALU_out == 8'b0);
-
+*/
+    
+/*
     always @*
         begin
             case(instr_bit)
@@ -549,16 +631,8 @@ module Tiny_PDP (
             default     :   bit_test = 1'b0;
         endcase
     end
-
-    // W Register
-    always @(posedge clk, negedge rst_n)
-        if(!rst_n) 
-            W <= 'b0;
-        else if(!SLEEP) 
-            if(instr_opcode4 == OP_RETLW)
-                W <= instr_literal8;
-            else 
-                if(wr_to_w) W <= ALU_out;
+*/
+    
 
     assign px_dir       = TRISB;
     assign px_dir       = TRISC;
@@ -566,10 +640,188 @@ module Tiny_PDP (
     assign px_out       = PORTB;
     assign py_out       = PORTC;
 
-    assign fifo_wdata   = {FIFO[1], FIFO[0]};
+    assign fifo_wdata   = {FIFO[3], FIFO[2], FIFO[1], FIFO[0]};
 
     assign irq          = CONTROL[5];
     assign fifo_rd      = CONTROL[6];
     assign fifo_wr      = CONTROL[7];
     
+endmodule
+
+
+/*
+    8-bit timer with a prescaler
+    ~100 cells
+*/
+module pdp_timer (
+    input           clk,
+    input           rst_n,
+
+    input           en,         // Timer Enable
+    input           tmr_wr,     // Timer write data_in
+    input   [2:0]   pr_sel,     // Prescaler divisor select
+
+    input   [7:0]   data_in,    // Timer data to be written
+    input   [7:0]   reload,     // The reload value
+
+    output  [7:0]   tmr,        // The current TImer value 
+
+    output          to          // Time out indicator
+
+);
+
+    reg     [7:0]   pr;
+    reg     [7:0]   TMR;
+    wire            tmr_en;
+    reg             pr_prev;
+    reg             tof_prev;
+    wire            TOF = (TMR == 0);
+    reg             TO;
+
+    // 8-bit prescaler
+    // That divides by 2, 4, ...., 256
+    // pr_sel selects one of these divisors
+    always @(posedge clk, negedge rst_n)
+        if(!rst_n)
+            pr <= 0;
+        else if(en)
+            pr <= pr + 1;
+        else if(~en)
+            pr <= 0;
+
+    always @(posedge clk, negedge rst_n)
+        if(!rst_n)
+            pr_prev <= 0;
+        else
+            pr_prev <= pr[pr_sel];
+    
+            assign tmr_en = ~pr_prev & pr[pr_sel];
+
+    // The timer
+    // 8-bit down counter 
+    always @(posedge clk, negedge rst_n)
+        if(!rst_n)
+            TMR <= 8'b0;
+        else if(tmr_wr)
+            TMR <= data_in;
+        else if(tmr_en)
+            if(TOF)
+                TMR <= reload;
+            else
+                TMR <= TMR - 1'b1;
+
+    // Generate the TO pulse
+    always@(posedge clk)
+        tof_prev <= TOF;
+
+    always @(posedge clk, negedge rst_n)
+        if(!rst_n)
+            TO <= 0;
+        else
+            TO <= TOF & !tof_prev;
+
+    assign to       =   TO;
+    assign tmr      =   TMR;
+
+endmodule
+
+/*
+    PDP ALU
+    ~500 cells; can be reduced to 250 using FA cells
+*/
+
+module pdp_alu (
+    input  [7:0]    W,
+    input  [7:0]    F,
+    input  [7:0]    L,
+    input  [5:0]    opcode,
+    input           C,
+    output [7:0]    out,
+    output          CF,
+    output          ZF
+);
+
+    `include "pdp_opcodes.vh"
+
+    always @* begin
+        CF = 0;
+        casex (opcode)
+            6'b0000_10          :   {CF,out} = F - W;
+            6'b0000_11          :   out = F - 8'b1;
+            6'b0000_00          :   out = W;
+            6'b0000_01          :   out = 1'b0;
+            OP_IORWF            :   out = F | W;
+            OP_ANDWF            :   out = F & W;
+            OP_XORWF            :   out = F ^ W;
+            OP_ADDWF            :   {CF,out} = F + W;                   
+            OP_MOVF             :   out = F;
+            OP_COMF             :   out = ~F;
+            OP_INCF             :   out = F + 8'b1;
+            OP_DECFSZ           :   out = F - 8'b1;
+            OP_INCFSZ           :   out = F + 8'b1;
+            OP_SWAPF            :   out = {F[3:0], F[7:4]};
+            OP_RRF              :   out = {C,F[7:1]};
+            OP_RLF              :   out = {F[6:0],C};
+            {OP_MOVLW, 2'bxx}   :   out = L;
+            {OP_IORLW, 2'bxx}   :   out = W | L;
+            {OP_ANDLW, 2'bxx}   :   out = W & L;
+            {OP_XORLW, 2'bxx}   :   out = W ^ L;
+            default             :   out = 8'hFF;
+        endcase
+    end
+
+    always @*
+        ZF = (out == 8'b0);
+
+endmodule
+
+
+/*
+    PDP Bit Manipulation Unit (BMU)
+*/
+
+module pdp_bmu(
+    input [2:0]     bit_sel,
+    input [3:0]     opcode,
+    input [7:0]     F,
+    
+    output [7:0]    out,
+    output          test
+
+);
+
+    `include "pdp_opcodes.vh"
+    
+    reg [7:0] bit_mask;
+
+    always @*
+    begin
+        case(bit_sel)
+            3'b000  : bit_mask = 8'b0000_0001;
+            3'b001  : bit_mask = 8'b0000_0010;
+            3'b010  : bit_mask = 8'b0000_0100;
+            3'b011  : bit_mask = 8'b0000_1000;
+            3'b100  : bit_mask = 8'b0001_0000;
+            3'b101  : bit_mask = 8'b0010_0000;
+            3'b110  : bit_mask = 8'b0100_0000;
+            3'b111  : bit_mask = 8'b1000_0000;
+        endcase
+    end
+
+    always @* begin    
+        case (opcode)
+            OP_BCF      :   out = F & ~bit_mask;
+            OP_BSF      :   out = F | bit_mask;
+            default     :   out = 8'h0;
+        endcase
+    end
+
+    always @* begin    
+        case (opcode)
+            OP_BTFSC    :   test = ~|(F & bit_mask);
+            OP_BTFSS    :   test =  |(F & bit_mask);
+            default     :   test = 1'b0;
+        endcase
+    end
+
 endmodule

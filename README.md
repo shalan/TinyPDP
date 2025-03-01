@@ -89,5 +89,4 @@ The [GNU PIC assembler](https://gputils.sourceforge.io/) (gpasm) can be used to 
 ### SPI Slave
 
 ### I2C Slave
-
-
+ 
